@@ -1,0 +1,446 @@
+<?php
+// START: PHP logic from home-student.php
+
+session_start();
+// Ensure the path to config.php is correct relative to where this file will be saved.
+// Assuming this file is in the same directory as home-student.php.
+require_once '../config.php';
+
+if (!isset($_SESSION['username']) || $_SESSION['usertype'] !== 'STUDENT') {
+    // Redirect to login if not authenticated as a student
+    header("Location: au_itrace_portal.php?tab=login");
+    exit;
+}
+
+$username = $_SESSION['username'];
+
+// Get user info (userID)
+if (!isset($link) || !is_object($link)) {
+    require_once '../config.php';
+}
+
+$stmtUser = $link->prepare("SELECT userID FROM tblsystemusers WHERE username = ?");
+$stmtUser->bind_param("s", $username);
+$stmtUser->execute();
+$resultUser = $stmtUser->get_result();
+
+if ($resultUser->num_rows === 0) {
+    die("Student not found.");
+}
+
+$user = $resultUser->fetch_assoc();
+$userID = $user['userID'];
+
+// Store userID in session for AJAX calls
+$_SESSION['userID'] = $userID;
+
+// FIXED NOTIFICATION TITLE STRING - MUST MATCH home-student.php
+const FIXED_NOTIF_TITLE = "Your Item Claim Request is scheduled for Physical Verification";
+
+// ======================================================================
+// ⚠️ ACTION: Handle AJAX request to clear notifications (Start)
+// The AJAX request from the frontend will hit this section
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'clear_notifications') {
+    if (isset($_SESSION['userID'])) {
+        $clearUserID = $_SESSION['userID'];
+        
+        if (!isset($link) || !is_object($link)) {
+            require_once '../config.php';
+        }
+        
+        $stmtClear = $link->prepare("UPDATE tblnotifications SET isread = 1 WHERE userID = ? AND isread = 0");
+        $stmtClear->bind_param("i", $clearUserID);
+        
+        if ($stmtClear->execute()) {
+            echo "Success";
+            $stmtClear->close();
+            $link->close();
+            exit; // Stop execution after handling the AJAX request
+        } else {
+            http_response_code(500);
+            echo "Database Error";
+            $stmtClear->close();
+            $link->close();
+            exit;
+        }
+    } else {
+        http_response_code(401);
+        echo "Unauthorized";
+        if (isset($link) && is_object($link)) $link->close();
+        exit;
+    }
+}
+// ⚠️ ACTION: Handle AJAX request to clear notifications (End)
+// ======================================================================
+
+// --- Notification Handling Logic (Fetching for initial page load) ---
+$notifCount = 0;
+// 1. Get unread notification count
+$sqlNotifCount = "SELECT COUNT(*) AS count FROM tblnotifications WHERE userID = ? AND isread = 0";
+$stmtCount = $link->prepare($sqlNotifCount);
+$stmtCount->bind_param("i", $userID);
+$stmtCount->execute();
+$resultCount = $stmtCount->get_result();
+if ($row = $resultCount->fetch_assoc()) {
+    $notifCount = $row['count'];
+}
+$stmtCount->close();
+
+// 2. Get latest 5 notifications
+$notifications = [];
+$sqlNotifList = "
+    SELECT 
+        notifID, 
+        adminmessage, 
+        datecreated, 
+        isread 
+    FROM tblnotifications 
+    WHERE userID = ? 
+    ORDER BY datecreated DESC 
+    LIMIT 5
+";
+$stmtList = $link->prepare($sqlNotifList);
+$stmtList->bind_param("i", $userID);
+$stmtList->execute();
+$resultList = $stmtList->get_result();
+while ($row = $resultList->fetch_assoc()) {
+    $row['notif_title'] = FIXED_NOTIF_TITLE; 
+    $row['notif_message'] = $row['adminmessage']; 
+    $notifications[] = $row;
+}
+$stmtList->close();
+// --- End Notification Handling ---
+
+// Close the connection after all fetches for the page load are complete
+if (!isset($_POST['action'])) {
+    $link->close();
+}
+?>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>AU iTrace - Privacy Policy</title>
+    <link href='https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css' rel='stylesheet' />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* CSS copied from home-student.php for consistent layout */
+        body { font-family: 'Poppins', sans-serif;background-color: #f3f4f6; margin: 0; }
+        nav.sidebar { width: 250px; background-color: #004ea8; color: white; padding: 20px 0 70px 0; display: flex; flex-direction: column; position: fixed; top: 0; left: 0; bottom: 0; overflow-y: auto; z-index: 1001; }
+        nav.sidebar h2 { padding: 0 20px; font-size: 20px; margin-bottom: 30px; }
+        nav.sidebar ul { list-style: none; padding: 0; margin: 0; flex-grow: 1; }
+        nav.sidebar ul li a { display: flex; align-items: center; padding: 12px 20px; color: white; text-decoration: none; }
+        nav.sidebar ul li a:hover, nav.sidebar ul li a.active { background-color: #2980b9; }
+        .logout-container { position: fixed; bottom: 20px; left: 0; width: 250px; padding: 0 20px; }
+        form.logout-form button { width: 100%; background-color: #ef4444; border: none; color: white; padding: 12px 0; border-radius: 0.375rem; font-size: 1rem; cursor: pointer; font-weight: 700; transition: background-color 0.2s; }
+        form.logout-form button:hover { background-color: #dc2626; }
+        .main-wrapper { display: flex; min-height: 100vh; }
+        .main-content { margin-left: 250px; flex: 1; padding: 1rem 2rem; min-height: 100vh; display: flex; flex-direction: column; }
+        .topnav { background-color: #004ea8; padding: 1.5rem 2rem; display: flex; justify-content: space-between; align-items: center; color: white; font-weight: 700; font-size: 1.5rem; border-radius: 0.5rem; box-shadow: 0 2px 8px rgb(0 0 0 / 0.15); margin-bottom: 1.5rem; user-select: none; position: relative; z-index: 1000; }
+        .notif-btn { background: none; border: none; cursor: pointer; font-size: 1.75rem; position: relative; color: white; }
+        .notif-badge { position: absolute; top: -6px; right: -10px; background-color: #ef4444; color: white; border-radius: 9999px; padding: 0 6px; font-size: 0.75rem; font-weight: 700; line-height: 1; user-select: none; }
+        .notif-dropdown { display: none; position: absolute; right: 0; top: 60px; width: 320px; background: white; border: 1px solid #ccc; border-radius: 0.5rem; box-shadow: 0 8px 16px rgba(0,0,0,0.1); z-index: 1002; max-height: 320px; overflow-y: auto; }
+        .notif-dropdown.show { display: block; }
+        .notif-dropdown h4 { margin: 0; padding: 0.75rem 1rem; background: #004ea8; color: white; border-radius: 0.5rem 0.5rem 0 0; font-weight: 600; font-size: 1rem; }
+        .notif-item { padding: 0.75rem 1rem; border-bottom: 1px solid #eee; font-size: 0.875rem; color: #333; line-height: 1.2; display: flex; justify-content: space-between; align-items: center; background-color: white; }
+        .notif-item.unread { background-color: #f0f8ff; border-left: 3px solid #004ea8; }
+        .notif-item:last-child { border-bottom: none; }
+        .notif-item small { color: #666; font-size: 0.75rem; display: block; margin-top: 4px; }
+        .content-wrapper { background-color: white; padding: 1.5rem 2rem; border-radius: 0.5rem; flex-grow: 1; box-shadow: 0 4px 12px rgb(0 0 0 / 0.05); overflow-y: auto; }
+        .view-btn { background-color: #10b981; color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; border: none; cursor: pointer; transition: background-color 0.2s; }
+        .view-btn:hover { background-color: #059669; }
+        .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); display: none; justify-content: center; align-items: center; z-index: 2000; }
+        .modal-content { 
+            background: white; 
+            padding: 30px; 
+            border-radius: 8px; 
+            width: 90%; 
+            max-width: 700px; 
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2); 
+            position: relative; 
+        }
+        .close-btn { position: absolute; top: 10px; right: 15px; font-size: 1.5rem; font-weight: bold; color: #aaa; cursor: pointer; }
+        .close-btn:hover { color: #333; }
+        
+        /* === FOOTER FIX === */
+        .app-footer {
+            margin-left: 250px; /* Same width as nav.sidebar */
+            width: calc(100% - 250px); 
+            box-sizing: border-box; 
+        }
+        /* === END FOOTER FIX === */
+    </style>
+</head>
+<body>
+
+<div class="main-wrapper">
+    <nav class="sidebar" role="navigation" aria-label="Sidebar Navigation">
+        <h2>AU iTrace — Student</h2>
+        <ul>
+            <li><a href="home-student.php">🏠 Home</a></li>
+            <li><a href="found-items-student.php">📦 Found Items</a></li>
+            <li><a href="item-status-student.php">🔍 Item Status</a></li>
+            <li><a href="help-and-info.php">❓ Help & Info</a></li>
+            <li><a href="privacy-policy.php" class="active">🔒 Privacy Policy</a></li>
+            <li><a href="profile-student.php"><i class='bx bxs-user' style="margin-right: 12px;"></i> Profile</a></li>
+        </ul>
+
+        <div class="logout-container">
+            <form method="POST" action="../logout.php" class="logout-form" role="form">
+                <button type="submit" aria-label="Logout">Logout</button>
+            </form>
+        </div>
+    </nav>
+
+    <div class="main-content">
+         <div class="topnav" role="banner">
+            <div>Welcome to AU iTrace</div>
+            <div style="position: relative;">
+                <button class="notif-btn" onclick="event.stopPropagation(); toggleDropdown()" aria-label="Toggle Notifications" aria-expanded="false" aria-controls="notifDropdown">
+                    <i class='bx bxs-bell'></i>
+                    <?php if ($notifCount > 0): ?>
+                        <span class="notif-badge" id="notifBadge" aria-live="polite" aria-atomic="true"><?php echo $notifCount; ?></span>
+                    <?php endif; ?>
+                </button>
+                
+                <div class="notif-dropdown" id="notifDropdown" role="region" aria-live="polite" aria-label="Notifications List" tabindex="-1">
+                    <h4>🔔 Notifications</h4>
+                    <?php if (count($notifications) > 0): ?>
+                        <?php foreach ($notifications as $notif): ?>
+                            <?php $isUnread = $notif['isread'] == 0 ? 'unread' : ''; ?>
+                            <div class="notif-item <?= $isUnread ?>" tabindex="0">
+                                <div>
+                                    <strong><?php echo htmlspecialchars($notif['notif_title']); ?></strong>
+                                    <small><?php echo date("M d, Y h:i A", strtotime($notif['datecreated'])); ?></small>
+                                </div>
+                                
+                                <?php
+                                // Clean the title to remove newlines/carriage returns
+                                $clean_title = str_replace(["\r", "\n"], ' ', $notif['notif_title']);
+                                // JSON encode the message for safe passing to JavaScript
+                                $safe_message = htmlspecialchars(json_encode($notif['notif_message']), ENT_QUOTES, 'UTF-8');
+                                ?>
+
+                                <button 
+                                    class="view-btn" 
+                                    onclick="showNotificationDetails(event, 
+                                        '<?php echo htmlspecialchars($clean_title, ENT_QUOTES); ?>', 
+                                        '<?php echo $safe_message; ?>'
+                                    )"
+                                    aria-label="View details for notification"
+                                >View</button>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <div class="notif-item" tabindex="0">No notifications</div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+
+        <div class="content-wrapper" role="main">
+            <h1 class="text-2xl font-semibold mb-6">🔒 AU iTrace Privacy Policy</h1>
+            
+            <section class="mb-6">
+                <h2 class="text-xl font-bold mb-3 text-gray-800">1. Data Collection and Usage</h2>
+                <p class="mb-4 text-gray-700">AU iTrace collects personal data, primarily  student ID, name, contact information , and  claim details , solely for the purpose of managing the lost and found process, verifying ownership, and facilitating the return of items.</p>
+                <p class="text-gray-700">We do not share your information with external third parties unless required by law or in cooperation with campus authorities for security purposes.</p>
+            </section>
+
+            <section class="mb-6">
+                <h2 class="text-xl font-bold mb-3 text-gray-800">2. Data Security</h2>
+                <p class="mb-4 text-gray-700">We implement robust security measures, including  SSL encryption  for data transmission and  secure database storage , to protect your information against unauthorized access, disclosure, alteration, or destruction.</p>
+            </section>
+
+            <section class="mb-6">
+                <h2 class="text-xl font-bold mb-3 text-gray-800">3. Notification System</h2>
+                <p class="mb-4 text-gray-700">The notification system uses your unique  User ID  to deliver timely and relevant updates regarding your claimed items, such as status changes or scheduling for physical verification. These notifications are stored in a secured database table and are marked as 'read' upon access.</p>
+            </section>
+
+            <section>
+                <h2 class="text-xl font-bold mb-3 text-gray-800">Contact Information</h2>
+                <p class="mb-4 text-gray-700">For any questions or concerns regarding this Privacy Policy or your data, please contact the  Office of Student Affairs  directly.</p>
+            </section>
+        </div>
+    </div>
+</div>
+
+<div id="notificationModal" class="modal" role="dialog" aria-labelledby="modalTitle" aria-modal="true">
+    <div class="modal-content">
+        <span class="close-btn" onclick="closeModal()" aria-label="Close modal">&times;</span>
+        <h3 id="modalTitle" class="text-xl font-bold mb-3">Notification Details</h3>
+        
+        <strong class="block mb-2 text-lg" id="modal-notif-title"></strong>
+        <div id="modal-notif-message" class="whitespace-pre-wrap text-gray-700 p-3 bg-gray-50 border border-gray-200 rounded"></div>
+        
+        <div class="mt-4 text-sm text-gray-500">
+            *This is the full message sent by the Office of Student Affairs regarding your claim.
+        </div>
+    </div>
+</div>
+
+<script>
+/**
+ * Toggles the notification dropdown and calls the AJAX function to clear unread count.
+ */
+function toggleDropdown() {
+    const dropdown = document.getElementById('notifDropdown');
+    const button = document.querySelector('.notif-btn');
+    const isShow = dropdown.classList.contains('show');
+    
+    // Toggle the dropdown visibility
+    button.setAttribute('aria-expanded', !isShow);
+    dropdown.classList.toggle('show');
+
+    // If opening the dropdown, clear the unread count via AJAX
+    if (!isShow) {
+        clearNotifCount();
+        dropdown.focus();
+    }
+}
+
+/**
+ * Shows the notification details in a modal.
+ * The message parameter is expected to be a JSON string from the PHP output.
+ */
+function showNotificationDetails(event, title, message) {
+    // Stop the click event from closing the dropdown immediately
+    event.stopPropagation();
+    
+    try {
+        let decodedMessage;
+        try {
+            // Attempt to parse the JSON encoded message
+            decodedMessage = JSON.parse(message);
+        } catch (e) {
+            // Fallback for non-JSON strings
+            decodedMessage = message;
+        }
+
+        document.getElementById('modalTitle').textContent = 'Notification Details';
+        document.getElementById('modal-notif-title').textContent = title;
+        // The whitespace-pre-wrap CSS will handle the formatting of the text content
+        document.getElementById('modal-notif-message').textContent = decodedMessage;
+
+        // Show the modal
+        document.getElementById('notificationModal').style.display = 'flex';
+    } catch (e) {
+        console.error("Error displaying notification data:", e);
+    }
+}
+
+function closeModal() {
+    document.getElementById('notificationModal').style.display = 'none';
+}
+
+// Close dropdown if clicked outside
+document.addEventListener('click', function (e) {
+    const dropdown = document.getElementById('notifDropdown');
+    const button = document.querySelector('.notif-btn');
+    const modal = document.getElementById('notificationModal');
+    
+    if (dropdown && dropdown.classList.contains('show')) {
+        // If click is outside button and outside dropdown and modal is not open
+        if (!dropdown.contains(e.target) && !button.contains(e.target) && modal.style.display !== 'flex') {
+            dropdown.classList.remove('show');
+            button.setAttribute('aria-expanded', 'false');
+        }
+    }
+});
+
+/**
+ * Sends an AJAX request to the server (this file) to mark all notifications as read.
+ */
+function clearNotifCount() {
+    const notifBadge = document.getElementById('notifBadge');
+    if (!notifBadge) return;
+    
+    const xhr = new XMLHttpRequest();
+    // IMPORTANT: The AJAX request points back to this same file
+    xhr.open('POST', 'privacy-policy.php', true);
+    xhr.setRequestHeader('Content-type', 'application/x-www-form-urlencoded');
+    
+    xhr.onload = function () {
+        if (xhr.status === 200 && xhr.responseText.trim() === 'Success') {
+            // Success: Remove the badge from the UI
+            notifBadge.remove();
+            
+            // Visually mark items as read
+            document.querySelectorAll('.notif-item.unread').forEach(item => {
+                item.classList.remove('unread');
+            });
+        } else {
+            console.error("Failed to clear notifications:", xhr.responseText);
+        }
+    };
+    
+    xhr.send('action=clear_notifications'); 
+}
+</script>
+
+<footer class="app-footer" style="
+        background-color: #222b35; 
+        color: #f3f4f6; /* Light text color */
+        padding: 30px 20px; 
+        font-family: 'Poppins', sans-serif; /* Fallback font */
+        box-sizing: border-box;
+    ">
+        <div style="
+            max-width: 1200px; 
+            margin-left: auto; 
+            margin-right: auto; 
+            display: flex; 
+            flex-wrap: wrap; 
+            justify-content: space-between;
+        ">
+            
+            <div style="width: 100%; max-width: 300px; margin-bottom: 30px;">
+                <h3 style="font-size: 1.125rem; font-weight: 700; margin-bottom: 15px; color: white;">AU iTrace</h3>
+                <p style="font-size: 0.875rem; line-height: 1.5; margin-bottom: 20px;">
+                    Arellano University's Digital Lost and Found System
+                </p>
+                <div style="font-size: 1.25rem;">
+                    <a href="#" style="color: #f3f4f6; text-decoration: none; margin-right: 15px;">f</a>
+                    <a href="#" style="color: #f3f4f6; text-decoration: none; margin-right: 15px;">&#x1F426;</a>
+                    <a href="#" style="color: #f3f4f6; text-decoration: none;">&#x1F4F7;</a>
+                </div>
+            </div>
+
+            <div style="width: 100%; max-width: 200px; margin-bottom: 30px;">
+                <h3 style="font-size: 1.125rem; font-weight: 700; margin-bottom: 15px; color: white;">Quick Links</h3>
+                <ul style="list-style: none; padding: 0; margin: 0; font-size: 0.875rem;">
+                    <li style="margin-bottom: 8px;">
+                        <a href="home-student.php" style="color: #d1d5db; text-decoration: none;">Home</a>
+                    </li>
+                    <li style="margin-bottom: 8px;">
+                        <a href="found-items-student.php" style="color: #d1d5db; text-decoration: none;">Found Items</a>
+                    </li>
+                </ul>
+            </div>
+
+            <div style="width: 100%; max-width: 200px; margin-bottom: 30px;">
+                <h3 style="font-size: 1.125rem; font-weight: 700; margin-bottom: 15px; color: white;">Resources</h3>
+                <ul style="list-style: none; padding: 0; margin: 0; font-size: 0.875rem;">
+                    <li style="margin-bottom: 8px;">
+                        <a href="#" style="color: #d1d5db; text-decoration: none;">User Guide</a>
+                    </li>
+                    <li style="margin-bottom: 8px;">
+                        <a href="#" style="color: #d1d5db; text-decoration: none;">FAQs</a>
+                    </li>
+                    <li style="margin-bottom: 8px;">
+                        <a href="#" style="color: #d1d5db; text-decoration: none;">Privacy Policy</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        
+        <div style="text-align: center; border-top: 1px solid #374151; padding-top: 15px; margin-top: 15px; font-size: 0.75rem; color: #9ca3af;">
+            <p style="margin: 0;">
+                Copyright &copy; 2025 AU iTrace. All Rights Reserved.
+            </p>
+        </div>
+    </footer>
+
+</body>
+</html>
